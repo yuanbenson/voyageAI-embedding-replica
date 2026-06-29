@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     model_context_tokens: int = 32_000
     max_inputs: int = 1_000
 
-    # Phase 3: Redis-backed token-count query batching.
+    # Phase 3: Redis-backed token-count batching.
     redis_url: str = "redis://redis:6379/0"
     redis_key_prefix: str = "voyage-replica"
 
@@ -29,14 +29,20 @@ class Settings(BaseSettings):
     query_max_wait_ms: int = 10
     query_batch_max_items: int = 128
 
+    # Phase 3B: separate synchronous document/indexing lane.
+    enable_document_batching: bool = False
+    document_batch_target_tokens: int = 2048
+    document_max_wait_ms: int = 50
+    document_batch_max_items: int = 128
+
     # This is the gateway instance/process that owns the synchronous HTTP connection.
     # In Kubernetes, set this from metadata.name. Locally, the batching client will
     # derive a unique id when this is left at the default.
     gateway_instance_id: str = "local-gateway"
     result_queue_ttl_seconds: int = 120
 
-    # Phase 3A runs one query batch worker for the nano lane. Document traffic and
-    # alias traffic remain on the direct vLLM path until Phase 3B+.
+    # One batch worker process can serve either the query lane or document lane.
+    # Kubernetes runs separate Deployments with different BATCH_WORKER_WORKLOAD values.
     batch_worker_model: str = "voyage-4-nano"
     batch_worker_workload: str = "query"
 
@@ -50,6 +56,13 @@ class Settings(BaseSettings):
         if isinstance(value, list):
             return {str(item).strip() for item in value if str(item).strip()}
         return {"local-dev-key"}
+
+    @field_validator("batch_worker_workload")
+    @classmethod
+    def validate_batch_worker_workload(cls, value: str) -> str:
+        if value not in {"query", "document"}:
+            raise ValueError("batch_worker_workload must be 'query' or 'document'")
+        return value
 
 
 @lru_cache

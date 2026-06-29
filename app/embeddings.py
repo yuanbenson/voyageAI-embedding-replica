@@ -52,9 +52,9 @@ class EmbeddingsService:
 
         tokenizer = get_tokenizer(self._settings.voyage_tokenizer_model)
 
-        # Voyage-compatible gateway behavior:
+        # Voyage AI-compatible gateway behavior:
         # The public API accepts input_type=query/document/null. vLLM does not know
-        # this Voyage-specific field, so the gateway applies retrieval prefixes
+        # this Voyage AI-specific field, so the gateway applies retrieval prefixes
         # before calling the internal worker.
         model_inputs = apply_input_type_prefixes(raw_inputs, request.input_type)
 
@@ -77,7 +77,8 @@ class EmbeddingsService:
                         ),
                     )
 
-        total_tokens = count_tokens(model_inputs, tokenizer)
+        per_input_tokens = [count_tokens([text], tokenizer) for text in model_inputs]
+        total_tokens = sum(per_input_tokens)
 
         if route.is_alias:
             logger.info(
@@ -109,11 +110,33 @@ class EmbeddingsService:
                     "total_tokens": total_tokens,
                 },
             )
-            data = await self._batching_client.embed_query(
+            data = await self._batching_client.embed_query(  # type: ignore[union-attr]
                 request_id=request_id,
                 route=route,
                 input_text=model_inputs[0],
                 token_count=total_tokens,
+            )
+        elif self._should_use_document_batching(
+            route_logical_model=route.logical_model,
+            workload=workload,
+        ):
+            logger.info(
+                "enqueue_document_embedding_request",
+                extra={
+                    "request_id": request_id,
+                    "logical_model": route.logical_model,
+                    "backend_model": route.backend_model,
+                    "lane": route.lane,
+                    "workload": workload.value,
+                    "total_tokens": total_tokens,
+                    "input_count": len(model_inputs),
+                },
+            )
+            data = await self._batching_client.embed_documents(  # type: ignore[union-attr]
+                request_id=request_id,
+                route=route,
+                inputs=model_inputs,
+                token_counts=per_input_tokens,
             )
         else:
             logger.info(
@@ -146,5 +169,18 @@ class EmbeddingsService:
             self._settings.enable_query_batching
             and self._batching_client is not None
             and workload == WorkloadClass.QUERY
+            and route_logical_model == self._settings.batch_worker_model
+        )
+
+    def _should_use_document_batching(
+        self,
+        *,
+        route_logical_model: str,
+        workload: WorkloadClass,
+    ) -> bool:
+        return (
+            self._settings.enable_document_batching
+            and self._batching_client is not None
+            and workload == WorkloadClass.DOCUMENT
             and route_logical_model == self._settings.batch_worker_model
         )
