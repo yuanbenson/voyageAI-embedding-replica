@@ -66,7 +66,7 @@ Both lanes initially load:
 ## Environment variables
 
 ```bash
-LOCAL_API_KEYS=local-dev-key
+LOCAL_API_KEYS='["local-dev-key"]'
 VOYAGE_TOKENIZER_MODEL=voyageai/voyage-4-nano
 
 VLLM_NANO_EMBEDDINGS_URL=http://vllm-nano:8000/v1/embeddings
@@ -102,8 +102,8 @@ curl --request POST \
   --header "Authorization: Bearer local-dev-key" \
   --header "content-type: application/json" \
   --data '{
-    "input": ["Sample text 1", "Sample text 2"],
-    "model": "voyage-4-large",
+    "input": ["hello world", "mongodb atlas vector search"],
+    "model": "voyage-4-nano",
     "input_type": "query"
   }'
 ```
@@ -118,9 +118,17 @@ The exact vLLM command may change by vLLM version, but the intended shape is:
 
 ```bash
 vllm serve voyageai/voyage-4-nano \
-  --task embed \
+  --runner pooling \
+  --convert embed \
+  --hf-overrides '{"architectures":["VoyageQwen3BidirectionalEmbedModel"]}' \
+  --trust-remote-code \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.5 \
+  --enforce-eager \
   --host 0.0.0.0 \
-  --port 8000
+  --port 8000 \
+  --served-model-name voyageai/voyage-4-nano
 ```
 
 The gateway then calls:

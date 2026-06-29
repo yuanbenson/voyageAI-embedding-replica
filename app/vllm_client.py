@@ -20,18 +20,12 @@ class VllmClient:
         *,
         route: ModelRoute,
         inputs: list[str],
-        output_dimension: int | None,
         request_id: str,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": route.backend_model,
             "input": inputs,
         }
-
-        # vLLM's OpenAI-compatible embeddings API uses `dimensions`.
-        # Voyage's public API calls this `output_dimension`.
-        if output_dimension is not None:
-            payload["dimensions"] = output_dimension
 
         headers = {"x-request-id": request_id}
         if self._settings.vllm_api_key:

@@ -27,6 +27,15 @@ class EmbeddingsService:
         request_id = str(uuid4())
         route = resolve_model_route(request.model, self._settings)
 
+        if request.output_dimension is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "output_dimension is not supported by the local vLLM backend in Phase 2. "
+                    "Omit output_dimension to use the backend default embedding size."
+                ),
+            )
+
         raw_inputs = request.normalized_inputs()
         if len(raw_inputs) > self._settings.max_inputs:
             raise HTTPException(
@@ -78,7 +87,6 @@ class EmbeddingsService:
         vllm_response = await self._vllm.embed(
             route=route,
             inputs=model_inputs,
-            output_dimension=request.output_dimension,
             request_id=request_id,
         )
 

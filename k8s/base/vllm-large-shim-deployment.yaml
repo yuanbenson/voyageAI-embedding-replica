@@ -19,6 +19,7 @@ spec:
         app: vllm-large-shim
         model-lane: voyage-4-large
     spec:
+      enableServiceLinks: false
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Equal"
@@ -84,9 +85,9 @@ spec:
             timeoutSeconds: 2
           resources:
             requests:
-              cpu: "4"
-              memory: "24Gi"
+              cpu: "2"
+              memory: "8Gi"
             limits:
               nvidia.com/gpu: "1"
-              cpu: "8"
-              memory: "48Gi"
+              cpu: "4"
+              memory: "14Gi"
