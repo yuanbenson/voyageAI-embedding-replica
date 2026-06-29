@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-document-batch-worker-metrics
+  namespace: inference
+spec:
+  type: ClusterIP
+  selector:
+    app: embedding-document-batch-worker
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

@@ -1,4 +1,4 @@
-# Voyage AI-Compatible Embedding Gateway — Phase 3C
+# Voyage AI-Compatible Embedding Gateway — Phase 3D
 
 This repo is a self-hosted, Voyage AI-compatible embedding service prototype.
 
@@ -12,9 +12,9 @@ Content-Type: application/json
 
 The gateway accepts Voyage AI-style embedding requests, validates and normalizes them, applies query/document prompt handling, counts tokens, and routes them to the appropriate internal serving path.
 
-For short query requests, Phase 3A uses Redis-backed token-count batching before calling vLLM. Phase 3B adds a separate synchronous document/indexing lane: document, multi-input, and longer nano-model requests are decomposed into child work items, batched by token budget, and reassembled into ordered Voyage AI-compatible responses. Phase 3C adds Prometheus metrics, queue inspection, and advisory autoscaling signals based on token backlog. The `voyage-4-large` shim still falls back to the direct vLLM path.
+For short query requests, Phase 3A uses Redis-backed token-count batching before calling vLLM. Phase 3B adds a separate synchronous document/indexing lane: document, multi-input, and longer nano-model requests are decomposed into child work items, batched by token budget, and reassembled into ordered Voyage AI-compatible responses. Phase 3C adds Prometheus metrics, queue inspection, and advisory autoscaling signals based on token backlog. Phase 3D adds opt-in Prometheus/KEDA/HPA/GKE autoscaling artifacts. The `voyage-4-large` shim still falls back to the direct vLLM path.
 
-## Phase 3C scope
+## Phase 3D scope
 
 Implemented in this overlay:
 
@@ -241,7 +241,36 @@ estimated_drain_time_seconds = token_backlog / total_tokens_per_second
 recommended_replicas = ceil(token_backlog / (target_drain_time_seconds * tokens_per_second_per_replica))
 ```
 
-For Phase 3C this recommendation is advisory only. Phase 3D can connect the Prometheus metrics to KEDA, HPA, and GKE node pool autoscaling.
+For Phase 3C this recommendation is advisory only. Phase 3D connects these metrics to opt-in Kubernetes autoscaling artifacts.
+
+### Phase 3D autoscaling artifacts
+
+Phase 3D adds real but opt-in manifests for the autoscaling chain:
+
+```text
+Redis queue token backlog
+  -> embedding-metrics-exporter
+  -> Prometheus
+  -> KEDA Prometheus scaler
+  -> HPA-managed Deployment replicas
+  -> optional GPU pod scale-out
+  -> optional GKE cluster autoscaler node-pool scale-out
+```
+
+Safe artifacts:
+
+```bash
+kubectl apply -k k8s/observability
+kubectl apply -k k8s/autoscaling
+```
+
+The optional GPU scaler is intentionally excluded from default kustomization because it can create additional GPU demand:
+
+```bash
+kubectl apply -f k8s/autoscaling/optional/vllm-nano-scaledobject.yaml
+```
+
+See `docs/phase3d-autoscaling.md` for install, validation, and teardown steps.
 
 ### Validated Phase 3A behavior
 
@@ -302,6 +331,9 @@ DOCUMENT_CURRENT_REPLICAS=1
 GATEWAY_INSTANCE_ID=local-gateway
 RESULT_QUEUE_TTL_SECONDS=120
 BATCH_WORKER_MODEL=voyage-4-nano
+METRICS_EXPORTER_REFRESH_SECONDS=5
+METRICS_EXPORTER_PORT=9090
+BATCH_WORKER_METRICS_PORT=9090
 BATCH_WORKER_WORKLOAD=query
 ```
 
@@ -447,6 +479,19 @@ Validate via port-forward:
 
 ```bash
 kubectl -n inference port-forward svc/embedding-api 8000:80
+```
+
+Apply Phase 3D observability and CPU worker autoscaling artifacts when KEDA is installed:
+
+```bash
+kubectl apply -k k8s/observability
+kubectl apply -k k8s/autoscaling
+```
+
+The optional vLLM GPU ScaledObject is not applied by default:
+
+```bash
+kubectl apply -f k8s/autoscaling/optional/vllm-nano-scaledobject.yaml
 ```
 
 ## Notes

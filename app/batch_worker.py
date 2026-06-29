@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 
 from fastapi import HTTPException
+from prometheus_client import start_http_server
 
 from app.config import Settings, get_settings
 from app.metrics import (
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 async def run_batch_worker() -> None:
     settings = get_settings()
+    start_http_server(settings.batch_worker_metrics_port)
     route = resolve_model_route(settings.batch_worker_model, settings)
     queue = RedisBatchQueue.from_url(settings.redis_url, settings.redis_key_prefix)
     vllm = VllmClient(settings)
@@ -53,6 +55,7 @@ async def run_batch_worker() -> None:
             "target_tokens": target_tokens,
             "max_wait_ms": max_wait_ms,
             "max_items": max_items,
+            "metrics_port": settings.batch_worker_metrics_port,
         },
     )
 

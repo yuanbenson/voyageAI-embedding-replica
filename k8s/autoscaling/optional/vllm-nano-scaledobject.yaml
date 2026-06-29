@@ -1,0 +1,38 @@
+# OPTIONAL / COSTLY DEMO MANIFEST
+#
+# Applying this ScaledObject can increase vllm-nano replicas. Because vllm-nano
+# requests nvidia.com/gpu: 1, extra replicas may trigger GKE GPU node-pool
+# scale-up if cluster autoscaler is enabled and the node pool max size permits it.
+#
+# Safe default:
+#   do not apply this file.
+#
+# Demo command:
+#   kubectl apply -f k8s/autoscaling/optional/vllm-nano-scaledobject.yaml
+#
+# Teardown:
+#   kubectl delete -f k8s/autoscaling/optional/vllm-nano-scaledobject.yaml
+#   kubectl -n inference scale deployment/vllm-nano --replicas=0
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-nano-token-backlog
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: vllm-nano
+    app.kubernetes.io/component: gpu-inference
+    phase: phase3d
+spec:
+  scaleTargetRef:
+    name: vllm-nano
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 2
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: total_nano_token_backlog
+        query: sum(voyage_queue_token_backlog{model="voyage-4-nano"})
+        threshold: "8192"

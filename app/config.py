@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     query_current_replicas: int = 1
     document_current_replicas: int = 1
 
+    # Phase 3D: Prometheus/KEDA autoscaling integration artifacts.
+    metrics_exporter_refresh_seconds: float = 5.0
+    metrics_exporter_port: int = 9090
+    batch_worker_metrics_port: int = 9090
+
     # One batch worker process can serve either the query lane or document lane.
     # Kubernetes runs separate Deployments with different BATCH_WORKER_WORKLOAD values.
     batch_worker_model: str = "voyage-4-nano"
