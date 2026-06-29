@@ -19,6 +19,12 @@ def test_rejects_empty_list() -> None:
         EmbeddingsRequest(input=[], model="voyage-4-nano")
 
 
-def test_rejects_bad_output_dimension() -> None:
-    with pytest.raises(ValidationError):
-        EmbeddingsRequest(input="hello", model="voyage-4-nano", output_dimension=123)
+def test_accepts_output_dimension_at_schema_layer() -> None:
+    request = EmbeddingsRequest(
+        input=["hello"],
+        model="voyage-4-nano",
+        input_type="query",
+        output_dimension=256,
+    )
+
+    assert request.output_dimension == 256
