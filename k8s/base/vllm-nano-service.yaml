@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-nano
+  namespace: inference
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-nano
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

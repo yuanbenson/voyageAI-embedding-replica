@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-large-shim
+  namespace: inference
+  labels:
+    app: vllm-large-shim
+    model-lane: voyage-4-large
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm-large-shim
+  template:
+    metadata:
+      labels:
+        app: vllm-large-shim
+        model-lane: voyage-4-large
+    spec:
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Equal"
+          value: "present"
+          effect: "NoSchedule"
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          imagePullPolicy: IfNotPresent
+          command: ["vllm", "serve", "voyageai/voyage-4-nano"]
+          args:
+            - "--runner"
+            - "pooling"
+            - "--convert"
+            - "embed"
+            - "--hf-overrides"
+            - '{"architectures":["VoyageQwen3BidirectionalEmbedModel"]}'
+            - "--trust-remote-code"
+            - "--dtype"
+            - "bfloat16"
+            - "--max-model-len"
+            - "32768"
+            - "--gpu-memory-utilization"
+            - "0.5"
+            - "--enforce-eager"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--served-model-name"
+            - "voyageai/voyage-4-nano"
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: HUGGING_FACE_HUB_TOKEN
+                  optional: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 60
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: "4"
+              memory: "24Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "48Gi"

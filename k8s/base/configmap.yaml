@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: embedding-gateway-config
+  namespace: inference
+data:
+  VOYAGE_TOKENIZER_MODEL: "voyageai/voyage-4-nano"
+  VLLM_NANO_EMBEDDINGS_URL: "http://vllm-nano:8000/v1/embeddings"
+  VLLM_LARGE_SHIM_EMBEDDINGS_URL: "http://vllm-large-shim:8000/v1/embeddings"
+  REQUEST_TIMEOUT_SECONDS: "120"
+  MODEL_CONTEXT_TOKENS: "32000"
+  MAX_INPUTS: "1000"
