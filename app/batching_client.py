@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import socket
 import uuid
 from typing import NoReturn
@@ -10,6 +11,11 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.config import Settings
+from app.metrics import (
+    GATEWAY_PENDING_DOCUMENT_CHILDREN,
+    GATEWAY_PENDING_REQUESTS,
+    GATEWAY_REASSEMBLY_LATENCY_SECONDS,
+)
 from app.model_registry import ModelRoute
 from app.queue_models import EmbeddingResultItem, EmbeddingWorkItem
 from app.redis_batch_queue import RedisBatchQueue, current_time_ms
@@ -119,6 +125,7 @@ class GatewayBatchingClient:
                 detail="Batching client is shutting down",
             )
 
+        start_time = time.perf_counter()
         now_ms = current_time_ms()
         timeout_ms = int(self._settings.request_timeout_seconds * 1000)
         child_request_ids = [
@@ -136,6 +143,7 @@ class GatewayBatchingClient:
                 )
                 self._pending[child_request_id] = future
                 futures.append(future)
+                _set_pending_metrics(workload, route.logical_model, self._pending)
 
                 item = EmbeddingWorkItem(
                     request_id=child_request_id,
@@ -180,6 +188,12 @@ class GatewayBatchingClient:
         finally:
             for child_request_id in child_request_ids:
                 self._pending.pop(child_request_id, None)
+            _set_pending_metrics(workload, route.logical_model, self._pending)
+
+        GATEWAY_REASSEMBLY_LATENCY_SECONDS.labels(
+            model=route.logical_model,
+            workload=workload,
+        ).observe(time.perf_counter() - start_time)
 
         results_by_index: dict[int, EmbeddingResultItem] = {}
         for result in results:
@@ -242,8 +256,21 @@ class GatewayBatchingClient:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("gateway_result_listener_error", extra={"gateway_id": self.gateway_id})
+                logger.exception(
+                    "gateway_result_listener_error",
+                    extra={"gateway_id": self.gateway_id},
+                )
                 await asyncio.sleep(0.1)
+
+
+def _set_pending_metrics(
+    workload: str,
+    logical_model: str,
+    pending: dict[str, asyncio.Future[EmbeddingResultItem]],
+) -> None:
+    GATEWAY_PENDING_REQUESTS.labels(workload=workload).set(len(pending))
+    if workload == "document":
+        GATEWAY_PENDING_DOCUMENT_CHILDREN.labels(model=logical_model).set(len(pending))
 
 
 def _resolve_gateway_instance_id(configured: str) -> str:

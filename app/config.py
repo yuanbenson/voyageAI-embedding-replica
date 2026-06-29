@@ -41,6 +41,21 @@ class Settings(BaseSettings):
     gateway_instance_id: str = "local-gateway"
     result_queue_ttl_seconds: int = 120
 
+    # Phase 3C: observability and autoscaling readiness.
+    queue_inspection_model: str = "voyage-4-nano"
+    queue_inspection_max_items: int = 10_000
+
+    query_tokens_per_second_per_replica: float = 8_000.0
+    document_tokens_per_second_per_replica: float = 8_000.0
+    query_target_drain_time_seconds: float = 0.5
+    document_target_drain_time_seconds: float = 2.0
+    query_autoscale_min_replicas: int = 1
+    query_autoscale_max_replicas: int = 4
+    document_autoscale_min_replicas: int = 1
+    document_autoscale_max_replicas: int = 8
+    query_current_replicas: int = 1
+    document_current_replicas: int = 1
+
     # One batch worker process can serve either the query lane or document lane.
     # Kubernetes runs separate Deployments with different BATCH_WORKER_WORKLOAD values.
     batch_worker_model: str = "voyage-4-nano"

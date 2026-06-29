@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voyage-replica-gateway"
-version = "0.3.1"
+version = "0.3.2"
 description = "Voyage-compatible embedding gateway with Redis token-count batching backed by vLLM workers."
 requires-python = ">=3.11"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
   "transformers>=4.44.0",
   "tokenizers>=0.19.0",
   "torch>=2.3.0",
+  "prometheus-client>=0.20.0",
 ]
 
 [project.optional-dependencies]
