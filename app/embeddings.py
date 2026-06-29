@@ -3,9 +3,11 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.batching_client import GatewayBatchingClient
 from app.config import Settings
 from app.model_registry import resolve_model_route
-from app.schemas import EmbeddingData, EmbeddingsRequest, EmbeddingsResponse, Usage
+from app.response_normalization import normalize_vllm_embedding_data
+from app.schemas import EmbeddingsRequest, EmbeddingsResponse, Usage
 from app.tokenization import (
     apply_input_type_prefixes,
     count_tokens,
@@ -13,15 +15,20 @@ from app.tokenization import (
     truncate_to_context_length,
 )
 from app.vllm_client import VllmClient
-
+from app.workload import WorkloadClass, classify_embedding_request
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingsService:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        batching_client: GatewayBatchingClient | None = None,
+    ):
         self._settings = settings
         self._vllm = VllmClient(settings)
+        self._batching_client = batching_client
 
     async def create_embeddings(self, request: EmbeddingsRequest) -> EmbeddingsResponse:
         request_id = str(uuid4())
@@ -31,7 +38,7 @@ class EmbeddingsService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "output_dimension is not supported by the local vLLM backend in Phase 2. "
+                    "output_dimension is not supported by the local vLLM backend in Phase 3. "
                     "Omit output_dimension to use the backend default embedding size."
                 ),
             )
@@ -46,9 +53,9 @@ class EmbeddingsService:
         tokenizer = get_tokenizer(self._settings.voyage_tokenizer_model)
 
         # Voyage-compatible gateway behavior:
-        # The public API accepts input_type=query/document/null.
-        # vLLM does not know this Voyage-specific field, so the gateway applies
-        # the transparent retrieval prefixes before calling the internal worker.
+        # The public API accepts input_type=query/document/null. vLLM does not know
+        # this Voyage-specific field, so the gateway applies retrieval prefixes
+        # before calling the internal worker.
         model_inputs = apply_input_type_prefixes(raw_inputs, request.input_type)
 
         if request.truncation:
@@ -84,13 +91,49 @@ class EmbeddingsService:
                 },
             )
 
-        vllm_response = await self._vllm.embed(
-            route=route,
-            inputs=model_inputs,
-            request_id=request_id,
+        workload = classify_embedding_request(
+            input_count=len(model_inputs),
+            total_tokens=total_tokens,
+            input_type=request.input_type,
+            query_max_tokens=self._settings.query_max_tokens,
         )
 
-        data = _normalize_vllm_embedding_data(vllm_response, expected_count=len(model_inputs))
+        if self._should_use_query_batching(route_logical_model=route.logical_model, workload=workload):
+            logger.info(
+                "enqueue_query_embedding_request",
+                extra={
+                    "request_id": request_id,
+                    "logical_model": route.logical_model,
+                    "backend_model": route.backend_model,
+                    "lane": route.lane,
+                    "total_tokens": total_tokens,
+                },
+            )
+            data = await self._batching_client.embed_query(
+                request_id=request_id,
+                route=route,
+                input_text=model_inputs[0],
+                token_count=total_tokens,
+            )
+        else:
+            logger.info(
+                "direct_embeddings_request",
+                extra={
+                    "request_id": request_id,
+                    "logical_model": route.logical_model,
+                    "backend_model": route.backend_model,
+                    "lane": route.lane,
+                    "workload": workload.value,
+                    "total_tokens": total_tokens,
+                    "input_count": len(model_inputs),
+                },
+            )
+            vllm_response = await self._vllm.embed(
+                route=route,
+                inputs=model_inputs,
+                request_id=request_id,
+            )
+            data = normalize_vllm_embedding_data(vllm_response, expected_count=len(model_inputs))
 
         return EmbeddingsResponse(
             data=data,
@@ -98,49 +141,10 @@ class EmbeddingsService:
             usage=Usage(total_tokens=total_tokens),
         )
 
-
-def _normalize_vllm_embedding_data(vllm_response: dict, expected_count: int) -> list[EmbeddingData]:
-    raw_data = vllm_response.get("data")
-    if not isinstance(raw_data, list):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Internal vLLM response missing data list",
+    def _should_use_query_batching(self, *, route_logical_model: str, workload: WorkloadClass) -> bool:
+        return (
+            self._settings.enable_query_batching
+            and self._batching_client is not None
+            and workload == WorkloadClass.QUERY
+            and route_logical_model == self._settings.batch_worker_model
         )
-
-    if len(raw_data) != expected_count:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Internal vLLM response data length mismatch; "
-                f"expected={expected_count}, actual={len(raw_data)}"
-            ),
-        )
-
-    normalized: list[EmbeddingData] = []
-
-    for default_index, item in enumerate(raw_data):
-        if not isinstance(item, dict):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Internal vLLM response data item must be an object",
-            )
-
-        embedding = item.get("embedding")
-        if not isinstance(embedding, list):
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Internal vLLM response data item missing embedding list",
-            )
-
-        # Preserve vLLM index if present; otherwise fall back to response order.
-        index = item.get("index", default_index)
-
-        normalized.append(
-            EmbeddingData(
-                embedding=embedding,
-                index=index,
-            )
-        )
-
-    normalized.sort(key=lambda item: item.index)
-    return normalized

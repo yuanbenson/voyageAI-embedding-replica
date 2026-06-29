@@ -1,36 +1,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: embedding-api
+  name: embedding-query-batch-worker
   namespace: inference
   labels:
-    app: embedding-api
+    app: embedding-query-batch-worker
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: embedding-api
+      app: embedding-query-batch-worker
   template:
     metadata:
       labels:
-        app: embedding-api
+        app: embedding-query-batch-worker
+        model-lane: voyage-4-nano
+        workload: query
     spec:
       enableServiceLinks: false
       containers:
-        - name: embedding-api
+        - name: batch-worker
           image: us-central1-docker.pkg.dev/voyage-replica-dev/voyage-replica/embedding-api:phase3-amd64
           imagePullPolicy: IfNotPresent
-          ports:
-            - name: http
-              containerPort: 8000
+          command: ["python", "-m", "app.batch_worker"]
           envFrom:
             - configMapRef:
                 name: embedding-gateway-config
           env:
-            - name: GATEWAY_INSTANCE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             - name: LOCAL_API_KEYS
               valueFrom:
                 secretKeyRef:
@@ -42,24 +38,10 @@ spec:
                   name: embedding-gateway-secrets
                   key: HUGGING_FACE_HUB_TOKEN
                   optional: true
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 2
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 20
-            timeoutSeconds: 2
           resources:
             requests:
               cpu: "500m"
-              memory: "1Gi"
+              memory: "512Mi"
             limits:
-              cpu: "2"
-              memory: "4Gi"
+              cpu: "1"
+              memory: "1Gi"

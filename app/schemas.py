@@ -2,7 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
 InputType = Literal["query", "document"]
 LogicalModel = Literal["voyage-4-nano", "voyage-4-large"]
 
@@ -13,8 +12,6 @@ class EmbeddingsRequest(BaseModel):
     input_type: InputType | None = None
     truncation: bool = True
     output_dimension: int | None = None
-
-    # Explicitly present but intentionally restricted in Phase 1.
     output_dtype: Literal["float"] = "float"
     encoding_format: Literal["float"] = "float"
 
@@ -34,7 +31,6 @@ class EmbeddingsRequest(BaseModel):
                 raise ValueError("all input items must be strings")
             if item == "":
                 raise ValueError("input strings must not be empty")
-
         return value
 
     @field_validator("output_dimension")
@@ -42,16 +38,14 @@ class EmbeddingsRequest(BaseModel):
     def validate_output_dimension(cls, value: int | None) -> int | None:
         if value is None:
             return value
-
-        supported = {256, 512, 1024, 2048}
-        if value not in supported:
-            raise ValueError(f"output_dimension must be one of {sorted(supported)}")
+        if value <= 0:
+            raise ValueError("output_dimension must be positive")
         return value
 
     @model_validator(mode="after")
-    def validate_phase1_constraints(self) -> "EmbeddingsRequest":
-        # This method is intentionally here so future unsupported fields can be rejected
-        # in one place as we expand toward rerank / contextualized / batch APIs.
+    def validate_phase3_constraints(self) -> "EmbeddingsRequest":
+        # Unsupported fields are rejected in the service layer where we can return
+        # a clear Voyage-compatible 400 instead of a Pydantic 422.
         return self
 
     def normalized_inputs(self) -> list[str]:
