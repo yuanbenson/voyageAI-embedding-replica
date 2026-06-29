@@ -144,6 +144,19 @@ class RedisBatchQueue:
             parsed.append(EmbeddingWorkItem.model_validate_json(raw))
         return parsed
 
+
+    async def list_embedding_work_raw(
+        self,
+        *,
+        logical_model: str,
+        workload: str,
+        max_items: int | None = None,
+    ) -> list[str]:
+        key = work_queue_key(self._key_prefix, logical_model, workload)
+        stop = -1 if max_items is None else max(0, max_items - 1)
+        raw_items = await self._redis.lrange(key, 0, stop)
+        return [item.decode("utf-8") if isinstance(item, bytes) else item for item in raw_items]
+
     async def queue_length(self, *, logical_model: str, workload: str) -> int:
         key = work_queue_key(self._key_prefix, logical_model, workload)
         return int(await self._redis.llen(key))

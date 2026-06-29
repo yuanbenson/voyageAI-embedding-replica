@@ -1,4 +1,4 @@
-# Voyage AI-Compatible Embedding Gateway — Phase 3B
+# Voyage AI-Compatible Embedding Gateway — Phase 3C
 
 This repo is a self-hosted, Voyage AI-compatible embedding service prototype.
 
@@ -12,9 +12,9 @@ Content-Type: application/json
 
 The gateway accepts Voyage AI-style embedding requests, validates and normalizes them, applies query/document prompt handling, counts tokens, and routes them to the appropriate internal serving path.
 
-For short query requests, Phase 3A uses Redis-backed token-count batching before calling vLLM. Phase 3B adds a separate synchronous document/indexing lane: document, multi-input, and longer nano-model requests are decomposed into child work items, batched by token budget, and reassembled into ordered Voyage AI-compatible responses. The `voyage-4-large` shim still falls back to the direct vLLM path.
+For short query requests, Phase 3A uses Redis-backed token-count batching before calling vLLM. Phase 3B adds a separate synchronous document/indexing lane: document, multi-input, and longer nano-model requests are decomposed into child work items, batched by token budget, and reassembled into ordered Voyage AI-compatible responses. Phase 3C adds Prometheus metrics, queue inspection, and advisory autoscaling signals based on token backlog. The `voyage-4-large` shim still falls back to the direct vLLM path.
 
-## Phase 3B scope
+## Phase 3C scope
 
 Implemented in this overlay:
 
@@ -37,6 +37,10 @@ Implemented in this overlay:
 - Ordered response reassembly for document and multi-input requests
 - CPU-only batch workers that claim token-budgeted microbatches and call vLLM once per batch
 - Per-gateway result queues for synchronous HTTP response handoff
+- Prometheus `/metrics` endpoint
+- `/debug/queues` queue introspection endpoint
+- `/debug/autoscaling` advisory autoscaling endpoint
+- Queue token backlog, oldest-item age, worker batch, and gateway latency metrics
 
 Deferred:
 
@@ -47,12 +51,11 @@ Deferred:
 - Batch jobs with 12-hour completion window
 - Contextualized embeddings
 - Multimodal embeddings
-- Prometheus/OpenTelemetry dashboards
 - Runtime-level CUDA graph / kernel fusion experiments
 
 ## Architecture
 
-This project implements a Voyage AI-compatible embedding gateway backed by vLLM. Phase 3A added Redis-based token-count batching for short, latency-sensitive query embedding requests. Phase 3B adds a separate synchronous document/indexing lane with a larger token budget and ordered response reassembly.
+This project implements a Voyage AI-compatible embedding gateway backed by vLLM. Phase 3A added Redis-based token-count batching for short, latency-sensitive query embedding requests. Phase 3B adds a separate synchronous document/indexing lane with a larger token budget and ordered response reassembly. Phase 3C adds observability and advisory autoscaling signals for both lanes.
 
 ```mermaid
 flowchart TB
@@ -208,6 +211,38 @@ The query batch worker pulls queued query requests from Redis and forms a microb
 
 Both lanes keep the synchronous API behavior while reducing the number of vLLM calls under concurrent traffic. Query batching protects low latency; document batching improves throughput while still using a bounded wait because `/v1/embeddings` remains synchronous.
 
+### Phase 3C observability and autoscaling readiness
+
+Phase 3C adds metrics and debug endpoints that make the query and document lanes measurable. The goal is to expose the signals a production autoscaler would need before actually wiring KEDA/HPA in Phase 3D.
+
+```http
+GET /metrics
+GET /debug/queues
+GET /debug/autoscaling
+```
+
+Important Prometheus metrics include:
+
+```text
+voyage_queue_items{model,workload}
+voyage_queue_token_backlog{model,workload}
+voyage_queue_oldest_item_age_seconds{model,workload}
+voyage_worker_batch_size{model,workload}
+voyage_worker_batch_tokens{model,workload}
+voyage_worker_vllm_latency_seconds{model,workload}
+voyage_gateway_request_latency_seconds{model,input_type,path}
+voyage_autoscaling_recommended_replicas{model,workload}
+```
+
+The key autoscaling idea is to think in tokens rather than messages:
+
+```text
+estimated_drain_time_seconds = token_backlog / total_tokens_per_second
+recommended_replicas = ceil(token_backlog / (target_drain_time_seconds * tokens_per_second_per_replica))
+```
+
+For Phase 3C this recommendation is advisory only. Phase 3D can connect the Prometheus metrics to KEDA, HPA, and GKE node pool autoscaling.
+
 ### Validated Phase 3A behavior
 
 Example validation run:
@@ -250,6 +285,20 @@ ENABLE_DOCUMENT_BATCHING=true
 DOCUMENT_BATCH_TARGET_TOKENS=2048
 DOCUMENT_MAX_WAIT_MS=50
 DOCUMENT_BATCH_MAX_ITEMS=128
+
+# Phase 3C observability/autoscaling-readiness.
+QUEUE_INSPECTION_MODEL=voyage-4-nano
+QUEUE_INSPECTION_MAX_ITEMS=10000
+QUERY_TOKENS_PER_SECOND_PER_REPLICA=8000
+DOCUMENT_TOKENS_PER_SECOND_PER_REPLICA=8000
+QUERY_TARGET_DRAIN_TIME_SECONDS=0.5
+DOCUMENT_TARGET_DRAIN_TIME_SECONDS=2.0
+QUERY_AUTOSCALE_MIN_REPLICAS=1
+QUERY_AUTOSCALE_MAX_REPLICAS=4
+DOCUMENT_AUTOSCALE_MIN_REPLICAS=1
+DOCUMENT_AUTOSCALE_MAX_REPLICAS=8
+QUERY_CURRENT_REPLICAS=1
+DOCUMENT_CURRENT_REPLICAS=1
 GATEWAY_INSTANCE_ID=local-gateway
 RESULT_QUEUE_TTL_SECONDS=120
 BATCH_WORKER_MODEL=voyage-4-nano

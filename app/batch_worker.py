@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
+from app.metrics import (
+    WORKER_BATCH_PROCESSING_LATENCY_SECONDS,
+    WORKER_BATCH_SIZE,
+    WORKER_BATCH_TOKENS,
+    WORKER_CLAIMED_BATCHES_TOTAL,
+    WORKER_CLAIMED_ITEMS_TOTAL,
+    WORKER_CLAIMED_TOKENS_TOTAL,
+    WORKER_COMPLETED_BATCHES_TOTAL,
+    WORKER_FAILED_BATCHES_TOTAL,
+    WORKER_LAST_BATCH_SIZE,
+    WORKER_LAST_BATCH_TOKENS,
+    WORKER_OLDEST_ITEM_WAIT_SECONDS,
+    WORKER_VLLM_LATENCY_SECONDS,
+)
 from app.model_registry import resolve_model_route
 from app.queue_models import EmbeddingResultItem, EmbeddingWorkItem
 from app.redis_batch_queue import RedisBatchQueue, current_time_ms
@@ -61,7 +76,13 @@ async def run_batch_worker() -> None:
                 await asyncio.sleep(0.005)
                 continue
 
-            await _process_batch(queue=queue, vllm=vllm, route=route, items=items, settings=settings)
+            await _process_batch(
+                queue=queue,
+                vllm=vllm,
+                route=route,
+                items=items,
+                settings=settings,
+            )
     finally:
         await queue.close()
 
@@ -103,9 +124,18 @@ async def _process_batch(
     batch_size = len(items)
     batch_tokens = sum(item.token_count for item in items)
     oldest_wait_ms = max(0, current_time_ms() - min(item.created_at_ms for item in items))
+    batch_start_time = time.perf_counter()
+    metric_labels = {"model": settings.batch_worker_model, "workload": workload}
+    WORKER_CLAIMED_BATCHES_TOTAL.labels(**metric_labels).inc()
+    WORKER_CLAIMED_ITEMS_TOTAL.labels(**metric_labels).inc(batch_size)
+    WORKER_CLAIMED_TOKENS_TOTAL.labels(**metric_labels).inc(batch_tokens)
+    WORKER_BATCH_SIZE.labels(**metric_labels).observe(batch_size)
+    WORKER_BATCH_TOKENS.labels(**metric_labels).observe(batch_tokens)
+    WORKER_OLDEST_ITEM_WAIT_SECONDS.labels(**metric_labels).observe(oldest_wait_ms / 1000)
 
     logger.info(
-        "claimed_%s_batch model=%s batch_size=%d batch_tokens=%d target_tokens=%d oldest_wait_ms=%d",
+        "claimed_%s_batch model=%s batch_size=%d batch_tokens=%d "
+        "target_tokens=%d oldest_wait_ms=%d",
         workload,
         settings.batch_worker_model,
         batch_size,
@@ -116,13 +146,22 @@ async def _process_batch(
 
     inputs = [item.input_text for item in items]
     try:
+        vllm_start_time = time.perf_counter()
         vllm_response = await vllm.embed(
             route=route,
             inputs=inputs,
             request_id=batch_request_id,
         )
+        WORKER_VLLM_LATENCY_SECONDS.labels(**metric_labels).observe(
+            time.perf_counter() - vllm_start_time
+        )
         data = normalize_vllm_embedding_data(vllm_response, expected_count=len(items))
     except HTTPException as exc:
+        WORKER_FAILED_BATCHES_TOTAL.labels(
+            model=settings.batch_worker_model,
+            workload=workload,
+            error_type=f"http_{exc.status_code}",
+        ).inc()
         logger.exception(
             "%s_batch_failed_http_exception",
             workload,
@@ -131,6 +170,11 @@ async def _process_batch(
         await _publish_batch_error(queue, items, str(exc.detail), exc.status_code, settings)
         return
     except Exception as exc:
+        WORKER_FAILED_BATCHES_TOTAL.labels(
+            model=settings.batch_worker_model,
+            workload=workload,
+            error_type="unhandled",
+        ).inc()
         logger.exception(
             "%s_batch_failed",
             workload,
@@ -152,6 +196,13 @@ async def _process_batch(
             ),
             ttl_seconds=settings.result_queue_ttl_seconds,
         )
+
+    WORKER_COMPLETED_BATCHES_TOTAL.labels(**metric_labels).inc()
+    WORKER_LAST_BATCH_SIZE.labels(**metric_labels).set(batch_size)
+    WORKER_LAST_BATCH_TOKENS.labels(**metric_labels).set(batch_tokens)
+    WORKER_BATCH_PROCESSING_LATENCY_SECONDS.labels(**metric_labels).observe(
+        time.perf_counter() - batch_start_time
+    )
 
     logger.info(
         "completed_%s_batch model=%s batch_size=%d batch_tokens=%d",
