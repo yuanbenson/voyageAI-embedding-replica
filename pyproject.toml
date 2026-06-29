@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voyage-replica-gateway"
-version = "0.3.0"
+version = "0.3.1"
 description = "Voyage-compatible embedding gateway with Redis token-count batching backed by vLLM workers."
 requires-python = ">=3.11"
 dependencies = [

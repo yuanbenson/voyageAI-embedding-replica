@@ -19,11 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 class GatewayBatchingClient:
-    """Gateway-side async request/result bridge for Phase 3 query batching.
+    """Gateway-side async request/result bridge for Redis-backed batching.
 
     The gateway owns the synchronous HTTP connection. It pushes work into a
-    per-model Redis queue, stores an in-memory Future by request_id, and has one
-    background listener consuming results for this gateway instance.
+    per-model/per-workload Redis queue, stores in-memory Futures by child
+    request_id, and has one background listener consuming results for this
+    gateway instance.
+
+    Phase 3A used this for one-result query requests. Phase 3B extends the same
+    bridge to document/multi-input requests by decomposing one parent HTTP
+    request into child work items and reassembling the child results in input
+    order.
     """
 
     def __init__(self, settings: Settings):
@@ -65,60 +71,148 @@ class GatewayBatchingClient:
         input_text: str,
         token_count: int,
     ) -> list[EmbeddingData]:
+        results = await self._enqueue_and_wait_for_children(
+            parent_request_id=request_id,
+            route=route,
+            workload="query",
+            inputs=[input_text],
+            token_counts=[token_count],
+        )
+        return [EmbeddingData(embedding=results[0].embedding or [], index=0)]
+
+    async def embed_documents(
+        self,
+        *,
+        request_id: str,
+        route: ModelRoute,
+        inputs: list[str],
+        token_counts: list[int],
+    ) -> list[EmbeddingData]:
+        if len(inputs) != len(token_counts):
+            raise ValueError("inputs and token_counts must have the same length")
+
+        results = await self._enqueue_and_wait_for_children(
+            parent_request_id=request_id,
+            route=route,
+            workload="document",
+            inputs=inputs,
+            token_counts=token_counts,
+        )
+
+        return [
+            EmbeddingData(embedding=result.embedding or [], index=index)
+            for index, result in enumerate(results)
+        ]
+
+    async def _enqueue_and_wait_for_children(
+        self,
+        *,
+        parent_request_id: str,
+        route: ModelRoute,
+        workload: str,
+        inputs: list[str],
+        token_counts: list[int],
+    ) -> list[EmbeddingResultItem]:
         if self._closed:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Query batching client is shutting down",
+                detail="Batching client is shutting down",
             )
 
         now_ms = current_time_ms()
         timeout_ms = int(self._settings.request_timeout_seconds * 1000)
-        future: asyncio.Future[EmbeddingResultItem] = asyncio.get_running_loop().create_future()
-        self._pending[request_id] = future
+        child_request_ids = [
+            parent_request_id if len(inputs) == 1 else f"{parent_request_id}:{index}"
+            for index in range(len(inputs))
+        ]
 
-        item = EmbeddingWorkItem(
-            request_id=request_id,
-            reply_to=self.gateway_id,
-            logical_model=route.logical_model,
-            backend_model=route.backend_model,
-            lane=route.lane,
-            input_text=input_text,
-            token_count=token_count,
-            created_at_ms=now_ms,
-            deadline_ms=now_ms + timeout_ms,
-        )
-
+        futures: list[asyncio.Future[EmbeddingResultItem]] = []
         try:
-            await self._queue.enqueue_embedding_work(
-                logical_model=route.logical_model,
-                workload="query",
-                item=item,
+            for index, (child_request_id, input_text, token_count) in enumerate(
+                zip(child_request_ids, inputs, token_counts, strict=True)
+            ):
+                future: asyncio.Future[EmbeddingResultItem] = (
+                    asyncio.get_running_loop().create_future()
+                )
+                self._pending[child_request_id] = future
+                futures.append(future)
+
+                item = EmbeddingWorkItem(
+                    request_id=child_request_id,
+                    parent_request_id=parent_request_id,
+                    input_index=index,
+                    input_count=len(inputs),
+                    reply_to=self.gateway_id,
+                    logical_model=route.logical_model,
+                    backend_model=route.backend_model,
+                    lane=route.lane,
+                    input_text=input_text,
+                    token_count=token_count,
+                    created_at_ms=now_ms,
+                    deadline_ms=now_ms + timeout_ms,
+                )
+                await self._queue.enqueue_embedding_work(
+                    logical_model=route.logical_model,
+                    workload=workload,
+                    item=item,
+                )
+
+            logger.info(
+                "queued_%s_embedding_request",
+                workload,
+                extra={
+                    "parent_request_id": parent_request_id,
+                    "logical_model": route.logical_model,
+                    "input_count": len(inputs),
+                    "total_tokens": sum(token_counts),
+                },
             )
-            result = await asyncio.wait_for(
-                future,
+
+            results = await asyncio.wait_for(
+                asyncio.gather(*futures),
                 timeout=self._settings.request_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Timed out waiting for batched embedding result",
+                detail=f"Timed out waiting for batched {workload} embedding result",
             ) from exc
         finally:
-            self._pending.pop(request_id, None)
+            for child_request_id in child_request_ids:
+                self._pending.pop(child_request_id, None)
 
-        if not result.ok:
-            raise HTTPException(
-                status_code=result.status_code or status.HTTP_502_BAD_GATEWAY,
-                detail=result.error or "Batched embedding worker failed",
-            )
+        results_by_index: dict[int, EmbeddingResultItem] = {}
+        for result in results:
+            if not result.ok:
+                raise HTTPException(
+                    status_code=result.status_code or status.HTTP_502_BAD_GATEWAY,
+                    detail=result.error or f"Batched {workload} embedding worker failed",
+                )
+            if result.embedding is None:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Batched {workload} embedding worker returned no embedding",
+                )
+            results_by_index[result.input_index] = result
 
-        if result.embedding is None:
+        missing = [index for index in range(len(inputs)) if index not in results_by_index]
+        if missing:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Batched embedding worker returned no embedding",
+                detail=f"Batched {workload} embedding response missing indexes: {missing}",
             )
 
-        return [EmbeddingData(embedding=result.embedding, index=result.index)]
+        ordered = [results_by_index[index] for index in range(len(inputs))]
+        logger.info(
+            "completed_%s_embedding_request",
+            workload,
+            extra={
+                "parent_request_id": parent_request_id,
+                "input_count": len(inputs),
+                "total_tokens": sum(token_counts),
+            },
+        )
+        return ordered
 
     async def _listen_for_results(self) -> None:
         while not self._closed:
@@ -137,6 +231,8 @@ class GatewayBatchingClient:
                         extra={
                             "gateway_id": self.gateway_id,
                             "request_id": result.request_id,
+                            "parent_request_id": result.parent_request_id,
+                            "input_index": result.input_index,
                         },
                     )
                     continue

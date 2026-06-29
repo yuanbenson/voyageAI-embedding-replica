@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     batching_client: GatewayBatchingClient | None = None
 
-    if settings.enable_query_batching:
+    if settings.enable_query_batching or settings.enable_document_batching:
         batching_client = GatewayBatchingClient(settings)
         await batching_client.start()
 
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Voyage-Compatible Embedding Gateway",
-    version="0.3.0",
+    version="0.3.1",
     lifespan=lifespan,
 )
 

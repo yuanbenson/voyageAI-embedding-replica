@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-document-batch-worker
+  namespace: inference
+  labels:
+    app: embedding-document-batch-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding-document-batch-worker
+  template:
+    metadata:
+      labels:
+        app: embedding-document-batch-worker
+        model-lane: voyage-4-nano
+        workload: document
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: batch-worker
+          image: us-central1-docker.pkg.dev/voyage-replica-dev/voyage-replica/embedding-api:phase3-amd64
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.batch_worker"]
+          envFrom:
+            - configMapRef:
+                name: embedding-gateway-config
+          env:
+            - name: BATCH_WORKER_WORKLOAD
+              value: "document"
+            - name: LOCAL_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: embedding-gateway-secrets
+                  key: LOCAL_API_KEYS
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: embedding-gateway-secrets
+                  key: HUGGING_FACE_HUB_TOKEN
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"

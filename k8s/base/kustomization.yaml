@@ -8,6 +8,7 @@ resources:
   - embedding-api-deployment.yaml
   - embedding-api-service.yaml
   - batch-worker-deployment.yaml
+  - document-batch-worker-deployment.yaml
   - vllm-nano-deployment.yaml
   - vllm-nano-service.yaml
   - vllm-large-shim-deployment.yaml
