@@ -1,0 +1,23 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: embedding-document-batch-worker-token-backlog
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: embedding-document-batch-worker
+    app.kubernetes.io/component: autoscaling
+    phase: phase3d
+spec:
+  scaleTargetRef:
+    name: embedding-document-batch-worker
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: document_token_backlog
+        query: voyage_queue_token_backlog{model="voyage-4-nano",workload="document"}
+        threshold: "2048"

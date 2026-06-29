@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: embedding-document-batch-worker
+  name: embedding-metrics-exporter
   namespace: inference
   labels:
-    app: embedding-document-batch-worker
+    app: embedding-metrics-exporter
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: embedding-document-batch-worker
+      app: embedding-metrics-exporter
   template:
     metadata:
       annotations:
@@ -17,16 +17,16 @@ spec:
         prometheus.io/path: "/metrics"
         prometheus.io/port: "9090"
       labels:
-        app: embedding-document-batch-worker
+        app: embedding-metrics-exporter
         model-lane: voyage-4-nano
-        workload: document
+        workload: metrics
     spec:
       enableServiceLinks: false
       containers:
-        - name: batch-worker
+        - name: metrics-exporter
           image: us-central1-docker.pkg.dev/voyage-replica-dev/voyage-replica/embedding-api:phase3-amd64
           imagePullPolicy: IfNotPresent
-          command: ["python", "-m", "app.batch_worker"]
+          command: ["python", "-m", "app.metrics_exporter"]
           ports:
             - name: metrics
               containerPort: 9090
@@ -34,8 +34,6 @@ spec:
             - configMapRef:
                 name: embedding-gateway-config
           env:
-            - name: BATCH_WORKER_WORKLOAD
-              value: "document"
             - name: LOCAL_API_KEYS
               valueFrom:
                 secretKeyRef:
@@ -49,8 +47,8 @@ spec:
                   optional: true
           resources:
             requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
               cpu: "500m"
               memory: "512Mi"
-            limits:
-              cpu: "1"
-              memory: "1Gi"

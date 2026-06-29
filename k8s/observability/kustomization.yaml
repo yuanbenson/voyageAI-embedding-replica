@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - prometheus-rbac.yaml
+  - prometheus-configmap.yaml
+  - prometheus-deployment.yaml
+  - prometheus-service.yaml
+  - metrics-exporter-deployment.yaml
+  - metrics-exporter-service.yaml
+  - query-batch-worker-metrics-service.yaml
+  - document-batch-worker-metrics-service.yaml

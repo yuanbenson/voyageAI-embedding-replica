@@ -12,6 +12,10 @@ spec:
       app: embedding-query-batch-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9090"
       labels:
         app: embedding-query-batch-worker
         model-lane: voyage-4-nano
@@ -23,6 +27,9 @@ spec:
           image: us-central1-docker.pkg.dev/voyage-replica-dev/voyage-replica/embedding-api:phase3-amd64
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "app.batch_worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           envFrom:
             - configMapRef:
                 name: embedding-gateway-config
